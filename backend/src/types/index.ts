@@ -33,4 +33,7 @@ export interface AuthPayload {
 
 export interface AuthenticatedRequest extends Request {
   user?: AuthPayload;
+  params: any;
+  body: any;
+  headers: any;
 }
