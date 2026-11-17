@@ -20,7 +20,7 @@ app.use(
 
 app.use(express.json());
 
-// Log minimal des requêtes en développement/production
+// Log minimal des requêtes
 app.use((req, _res, next) => {
   console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
   next();
@@ -31,7 +31,7 @@ app.get('/', (_req: Request, res: Response) => {
   res.json({
     message: 'API TaskFlow opérationnelle',
     version: '1.0.0',
-    mode: config.gatewayUrl ? 'hybrid_via_gateway' : (config.databaseUrl ? 'direct_database' : 'not_connected'),
+    mode: config.gatewayUrl ? 'hybrid_via_gateway' : 'autonomous',
   });
 });
 
@@ -41,7 +41,7 @@ app.get('/api/health', async (_req: Request, res: Response) => {
   res.status(health.status === 'healthy' ? 200 : 503).json({
     api: 'online',
     timestamp: new Date().toISOString(),
-    dataService: health,
+    service: health,
   });
 });
 
@@ -61,7 +61,7 @@ const PORT = config.port;
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`===============================================`);
   console.log(` Serveur TaskFlow API démarré sur le port ${PORT}`);
-  console.log(` Mode : ${config.gatewayUrl ? 'Architecture Hybride (Passerelle Locale)' : 'Direct PostgreSQL'}`);
+  console.log(` Mode : ${config.gatewayUrl ? 'Architecture Hybride (Passerelle)' : 'Autonome'}`);
   console.log(` Environnement : ${config.nodeEnv}`);
   console.log(`===============================================`);
 });

@@ -1,32 +1,23 @@
-import { Pool } from 'pg';
 import { config } from '../config';
 import { Task, User, UserWithPassword } from '../types';
 
 export class DataUnavailableError extends Error {
   statusCode: number;
-  constructor(message = 'Communication interrompue avec la base de données locale. Vérifiez que le PC 1 et le tunnel Cloudflare sont actifs.') {
+  constructor(message = 'Communication interrompue avec la base de données. Vérifiez que la passerelle ou le tunnel sont actifs.') {
     super(message);
     this.name = 'DataUnavailableError';
     this.statusCode = 503;
   }
 }
 
-// Client direct PostgreSQL (optionnel si DATABASE_URL est fourni)
-let directPool: Pool | null = null;
-if (!config.gatewayUrl && config.databaseUrl) {
-  directPool = new Pool({
-    connectionString: config.databaseUrl,
-  });
-}
-
-// Stockage autonome en mémoire (vide par défaut)
+// Stockage autonome en mémoire
 const memoryUsers: UserWithPassword[] = [];
 const memoryTasks: Task[] = [];
 
-// Appel sécurisé vers la Passerelle Locale via le tunnel Cloudflare
+// Appel sécurisé vers la Passerelle (si configurée par votre coéquipier)
 async function callGateway<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
   if (!config.gatewayUrl) {
-    throw new DataUnavailableError('GATEWAY_URL non configuré sur le serveur Railway.');
+    throw new DataUnavailableError('GATEWAY_URL non configuré.');
   }
 
   const url = `${config.gatewayUrl}${endpoint}`;
@@ -59,9 +50,9 @@ async function callGateway<T>(endpoint: string, options: RequestInit = {}): Prom
 
     return (await response.json()) as T;
   } catch (error: any) {
-    console.error(`[Passerelle Locale Erreur] ${endpoint}:`, error.message);
+    console.error(`[Passerelle Erreur] ${endpoint}:`, error.message);
     throw new DataUnavailableError(
-      'Impossible de joindre la base locale. Le PC 1 ou le tunnel Cloudflare est indisponible.'
+      'Impossible de joindre la passerelle de données. Le serveur de données est indisponible.'
     );
   }
 }
@@ -76,15 +67,7 @@ export const dataService = {
       });
     }
 
-    if (directPool) {
-      const res = await directPool.query<UserWithPassword>(
-        'SELECT id, full_name, email, password_hash, created_at FROM users WHERE email = $1',
-        [email.toLowerCase()]
-      );
-      return res.rows[0] || null;
-    }
-
-    // Fallback mémoire
+    // Mode autonome
     const found = memoryUsers.find((u) => u.email.toLowerCase() === email.toLowerCase());
     return found || null;
   },
@@ -95,15 +78,7 @@ export const dataService = {
       return callGateway<User | null>(`/api/internal/users/${id}`);
     }
 
-    if (directPool) {
-      const res = await directPool.query<User>(
-        'SELECT id, full_name, email, created_at FROM users WHERE id = $1',
-        [id]
-      );
-      return res.rows[0] || null;
-    }
-
-    // Fallback mémoire
+    // Mode autonome
     const found = memoryUsers.find((u) => u.id === id);
     if (!found) return null;
     return {
@@ -123,15 +98,7 @@ export const dataService = {
       });
     }
 
-    if (directPool) {
-      const res = await directPool.query<User>(
-        'INSERT INTO users (full_name, email, password_hash) VALUES ($1, $2, $3) RETURNING id, full_name, email, created_at',
-        [data.full_name, data.email.toLowerCase(), data.password_hash]
-      );
-      return res.rows[0];
-    }
-
-    // Fallback mémoire
+    // Mode autonome
     const newUser: UserWithPassword = {
       id: 'user-' + Date.now(),
       full_name: data.full_name,
@@ -154,15 +121,7 @@ export const dataService = {
       return callGateway<Task[]>(`/api/internal/tasks?userId=${userId}`);
     }
 
-    if (directPool) {
-      const res = await directPool.query<Task>(
-        'SELECT id, user_id, title, description, status, priority, due_date, created_at, updated_at FROM tasks WHERE user_id = $1 ORDER BY created_at DESC',
-        [userId]
-      );
-      return res.rows;
-    }
-
-    // Fallback mémoire
+    // Mode autonome
     return memoryTasks
       .filter((t) => t.user_id === userId)
       .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
@@ -174,15 +133,7 @@ export const dataService = {
       return callGateway<Task | null>(`/api/internal/tasks/${id}?userId=${userId}`);
     }
 
-    if (directPool) {
-      const res = await directPool.query<Task>(
-        'SELECT id, user_id, title, description, status, priority, due_date, created_at, updated_at FROM tasks WHERE id = $1 AND user_id = $2',
-        [id, userId]
-      );
-      return res.rows[0] || null;
-    }
-
-    // Fallback mémoire
+    // Mode autonome
     const found = memoryTasks.find((t) => t.id === id && t.user_id === userId);
     return found || null;
   },
@@ -203,17 +154,7 @@ export const dataService = {
       });
     }
 
-    if (directPool) {
-      const res = await directPool.query<Task>(
-        `INSERT INTO tasks (user_id, title, description, status, priority, due_date)
-         VALUES ($1, $2, $3, $4, $5, $6)
-         RETURNING id, user_id, title, description, status, priority, due_date, created_at, updated_at`,
-        [data.user_id, data.title, data.description || null, data.status, data.priority, data.due_date || null]
-      );
-      return res.rows[0];
-    }
-
-    // Fallback mémoire
+    // Mode autonome
     const newTask: Task = {
       id: 'task-' + Date.now(),
       user_id: data.user_id,
@@ -248,54 +189,7 @@ export const dataService = {
       });
     }
 
-    if (directPool) {
-      const existing = await directPool.query('SELECT id FROM tasks WHERE id = $1 AND user_id = $2', [id, userId]);
-      if (existing.rowCount === 0) return null;
-
-      const fields: string[] = [];
-      const values: any[] = [];
-      let idx = 1;
-
-      if (data.title !== undefined) {
-        fields.push(`title = $${idx++}`);
-        values.push(data.title);
-      }
-      if (data.description !== undefined) {
-        fields.push(`description = $${idx++}`);
-        values.push(data.description);
-      }
-      if (data.status !== undefined) {
-        fields.push(`status = $${idx++}`);
-        values.push(data.status);
-      }
-      if (data.priority !== undefined) {
-        fields.push(`priority = $${idx++}`);
-        values.push(data.priority);
-      }
-      if (data.due_date !== undefined) {
-        fields.push(`due_date = $${idx++}`);
-        values.push(data.due_date);
-      }
-
-      if (fields.length === 0) {
-        return this.getTaskById(id, userId);
-      }
-
-      values.push(id);
-      values.push(userId);
-
-      const query = `
-        UPDATE tasks
-        SET ${fields.join(', ')}
-        WHERE id = $${idx++} AND user_id = $${idx++}
-        RETURNING id, user_id, title, description, status, priority, due_date, created_at, updated_at
-      `;
-
-      const res = await directPool.query<Task>(query, values);
-      return res.rows[0] || null;
-    }
-
-    // Fallback mémoire
+    // Mode autonome
     const task = memoryTasks.find((t) => t.id === id && t.user_id === userId);
     if (!task) return null;
 
@@ -318,12 +212,7 @@ export const dataService = {
       return !!res?.success;
     }
 
-    if (directPool) {
-      const res = await directPool.query('DELETE FROM tasks WHERE id = $1 AND user_id = $2', [id, userId]);
-      return (res.rowCount ?? 0) > 0;
-    }
-
-    // Fallback mémoire
+    // Mode autonome
     const taskIndex = memoryTasks.findIndex((t) => t.id === id && t.user_id === userId);
     if (taskIndex === -1) return false;
 
@@ -331,26 +220,17 @@ export const dataService = {
     return true;
   },
 
-  // Vérifier la santé du service de données
+  // Vérifier la santé du service
   async checkHealth(): Promise<{ status: string; mode: string; details?: any }> {
     if (config.gatewayUrl) {
       try {
         const res = await callGateway<any>('/api/internal/health');
-        return { status: 'healthy', mode: 'hybrid_gateway', details: res };
+        return { status: 'healthy', mode: 'gateway_connected', details: res };
       } catch (err: any) {
-        return { status: 'degraded', mode: 'hybrid_gateway', details: { error: err.message } };
+        return { status: 'degraded', mode: 'gateway_disconnected', details: { error: err.message } };
       }
     }
 
-    if (directPool) {
-      try {
-        await directPool.query('SELECT 1');
-        return { status: 'healthy', mode: 'direct_postgres', details: { mode: 'direct_postgres' } };
-      } catch (err: any) {
-        return { status: 'degraded', mode: 'direct_postgres', details: { error: err.message } };
-      }
-    }
-
-    return { status: 'healthy', mode: 'autonomous', details: 'Backend ready' };
+    return { status: 'healthy', mode: 'autonomous_backend', details: 'Backend opérationnel' };
   },
 };
